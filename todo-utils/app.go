@@ -21,7 +21,7 @@ type CreateTaskRequest struct {
 }
 
 type Task struct {
-	ID        int    `json:"string"`
+	ID        string `json:"id"`
 	Title     string `json:"title"`
 	Status    string `json:"status"`
 	DiscordID string `json:"discord_id"`
@@ -148,4 +148,102 @@ func (t *TodoApp) GetTasks(discordID string, page int, limit int) (*TaskListResp
 	}
 
 	return &taskResponse, nil
+}
+
+type UpdateTaskRequest struct {
+	Title     string `json:"Title"`
+	Status    string `json:"Status"`
+	DiscordID string `json:"DiscordID"`
+}
+
+func (t *TodoApp) UpdateTask(taskID string, title string, status string, discordID string) (string, error) {
+	// Construct the request URL
+	apiURL := fmt.Sprintf("%s/task/edit/%s", t.APIUrl, taskID)
+
+	// Create the request object
+	requestObj := UpdateTaskRequest{
+		Title:     title,
+		Status:    status,
+		DiscordID: discordID,
+	}
+
+	// Marshal the struct to JSON
+	jsonData, err := json.Marshal(requestObj)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request object: %w", err)
+	}
+
+	// Create a PUT request
+	req, err := http.NewRequest("PUT", apiURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	// Set the content type header
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send the request
+	resp, err := t.HttpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for "error" field in JSON
+	var jsonResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &jsonResp); err == nil {
+		if errVal, exists := jsonResp["error"]; exists {
+			return "", fmt.Errorf("%v", errVal)
+		}
+	}
+
+	return string(respBody), nil
+}
+
+func (t *TodoApp) DeleteTask(taskID string, discordID string) (string, error) {
+	// Construct the request URL with query parameters
+	apiURL := fmt.Sprintf("%s/task/delete/%s", t.APIUrl, taskID)
+	
+	// Add discord_id as a query parameter
+	params := url.Values{}
+	params.Add("discord_id", discordID)
+	fullURL := fmt.Sprintf("%s?%s", apiURL, params.Encode())
+
+	// Create a DELETE request
+	req, err := http.NewRequest("DELETE", fullURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set the content type header
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send the request
+	resp, err := t.HttpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for "error" field in JSON
+	var jsonResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &jsonResp); err == nil {
+		if errVal, exists := jsonResp["error"]; exists {
+			return "", fmt.Errorf("%v", errVal)
+		}
+	}
+
+	return string(respBody), nil
 }
