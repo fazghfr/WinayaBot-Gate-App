@@ -58,12 +58,13 @@ func Start(token string, service llm_utils.LLMService) {
 	client := &http.Client{}
 
 	// Initialize your TodoApp instance
-	TodoApp = todo_utils.InitTodoAPP(client, "http://localhost:8080/api")
+	TodoApp = todo_utils.InitTodoAPP(client, "http://backend:8080/api")
 
 	// 2. DEFINE INTENTS
 	// We need IntentsGuildMessages to receive message events.
 	// We also need IntentsGuildMessageReactions for button interactions.
-	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMessageReactions
+	// And we need IntentsDirectMessages to receive DM events.
+	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMessageReactions | discordgo.IntentsDirectMessages
 
 	// 3. ADD EVENT HANDLERS
 	// Add a handler for the Ready event, which fires when the bot is connected.
@@ -119,8 +120,15 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	// Get the DM channel for the user
+	dmChannel, err := s.UserChannelCreate(m.Author.ID)
+	if err != nil {
+		// If we can't create a DM channel, fall back to the original channel
+		log.Printf("Failed to create DM channel for user %s: %v", m.Author.ID, err)
+		dmChannel = &discordgo.Channel{ID: m.ChannelID}
+	}
+
 	// Check if this user is in a conversation
-	// TODO : move into direct messages
 	if state, exists := userStates[m.Author.ID]; exists {
 		switch state.Action {
 		case "create":
@@ -129,7 +137,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			case 1:
 				state.TaskTitle = m.Content
 				state.Step = 2
-				s.ChannelMessageSend(m.ChannelID, "Got it ✅ Now, what’s the status? (backlog, in-progress, done)")
+				s.ChannelMessageSend(dmChannel.ID, "Got it ✅ Now, what’s the status? (backlog, in-progress, done)")
 
 			// Step 2: Get Status & Create Task
 			case 2:
@@ -137,21 +145,21 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 				response, err := TodoApp.CreateTask(state.TaskTitle, status, m.Author.ID)
 				if err != nil {
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ %v", err))
-					s.ChannelMessageSend(m.ChannelID, "Try Again")
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("❌ %v", err))
+					s.ChannelMessageSend(dmChannel.ID, "Try Again")
 
 				} else {
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("✅ Task Created: %s \n", state.TaskTitle))
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(":ledger: Task Status: %s \n", status))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("✅ Task Created: %s \n", state.TaskTitle))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf(":ledger: Task Status: %s \n", status))
 
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(":debug response: %s \n", response))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf(":debug response: %s \n", response))
 
 				}
 
 				// End conversation
 				delete(userStates, m.Author.ID)
 			}
-			
+
 		case "update":
 			switch state.Step {
 			// Step 1: Get Title
@@ -160,7 +168,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					state.TaskTitle = m.Content
 				}
 				state.Step = 2
-				s.ChannelMessageSend(m.ChannelID, "Got it ✅ Now, what’s the status? (backlog, in-progress, done) (Type 'skip' to keep the current status)")
+				s.ChannelMessageSend(dmChannel.ID, "Got it ✅ Now, what's the status? (backlog, in-progress, done) (Type 'skip' to keep the current status)")
 
 			// Step 2: Get Status & Update Task
 			case 2:
@@ -172,7 +180,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				// Look up the actual task ID using the friendly number
 				paginationState, exists := userPagination[m.Author.ID]
 				if !exists || paginationState.TaskIDMap == nil {
-					s.ChannelMessageSend(m.ChannelID, "❌ Error: Task list not found. Please run `!todo-list` first.")
+					s.ChannelMessageSend(dmChannel.ID, "❌ Error: Task list not found. Please run `!todo-list` first.")
 					delete(userStates, m.Author.ID)
 					return
 				}
@@ -181,41 +189,41 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				if !taskExists {
 					state.Attempts++
 					if state.Attempts >= 3 {
-						s.ChannelMessageSend(m.ChannelID, "❌ Too many invalid attempts. Please run `!todo-list` to see the current task numbers.")
+						s.ChannelMessageSend(dmChannel.ID, "❌ Too many invalid attempts. Please run `!todo-list` to see the current task numbers.")
 						delete(userStates, m.Author.ID)
 						return
 					}
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Invalid task number. Please try again. (%d/3 attempts)", state.Attempts))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("❌ Invalid task number. Please try again. (%d/3 attempts)", state.Attempts))
 					state.Step = 1 // Reset to step 1 to ask for title again
-					s.ChannelMessageSend(m.ChannelID, "📝 Let's update your task! What's the new title? (Type 'skip' to keep the current title)")
+					s.ChannelMessageSend(dmChannel.ID, "📝 Let's update your task! What's the new title? (Type 'skip' to keep the current title)")
 					return
 				}
 
 				// Use existing title/status if not provided
 				title := state.TaskTitle
 				status := state.TaskStatus
-				
+
 				// If title or status is empty, we need to get the current values
 				// For simplicity, we'll just use empty strings and let the API handle defaults
 				// In a production app, you might want to fetch the current task details first
-				
+
 				response, err := TodoApp.UpdateTask(taskID, title, status, m.Author.ID)
 				if err != nil {
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ %v", err))
-					s.ChannelMessageSend(m.ChannelID, "Try Again")
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("❌ %v", err))
+					s.ChannelMessageSend(dmChannel.ID, "Try Again")
 
 				} else {
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("✅ Task Updated: %s \n", title))
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(":ledger: New Task Status: %s \n", status))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("✅ Task Updated: %s \n", title))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf(":ledger: New Task Status: %s \n", status))
 
-					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(":debug response: %s \n", response))
+					s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf(":debug response: %s \n", response))
 
 				}
 
 				// End conversation
 				delete(userStates, m.Author.ID)
 			}
-			
+
 		case "delete":
 			switch state.Step {
 			// Step 1: Confirm deletion
@@ -224,7 +232,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					// Look up the actual task ID using the friendly number
 					paginationState, exists := userPagination[m.Author.ID]
 					if !exists || paginationState.TaskIDMap == nil {
-						s.ChannelMessageSend(m.ChannelID, "❌ Error: Task list not found. Please run `!todo-list` first.")
+						s.ChannelMessageSend(dmChannel.ID, "❌ Error: Task list not found. Please run `!todo-list` first.")
 						delete(userStates, m.Author.ID)
 						return
 					}
@@ -233,26 +241,26 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					if !taskExists {
 						state.Attempts++
 						if state.Attempts >= 3 {
-							s.ChannelMessageSend(m.ChannelID, "❌ Too many invalid attempts. Please run `!todo-list` to see the current task numbers.")
+							s.ChannelMessageSend(dmChannel.ID, "❌ Too many invalid attempts. Please run `!todo-list` to see the current task numbers.")
 							delete(userStates, m.Author.ID)
 							return
 						}
-						s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Invalid task number. Please try again. (%d/3 attempts)", state.Attempts))
-						s.ChannelMessageSend(m.ChannelID, "🗑️ Are you sure you want to delete this task? Type 'yes' to confirm or 'no' to cancel.")
+						s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("❌ Invalid task number. Please try again. (%d/3 attempts)", state.Attempts))
+						s.ChannelMessageSend(dmChannel.ID, "🗑️ Are you sure you want to delete this task? Type 'yes' to confirm or 'no' to cancel.")
 						return
 					}
 
 					response, err := TodoApp.DeleteTask(taskID, m.Author.ID)
 					if err != nil {
-						s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ %v", err))
-						s.ChannelMessageSend(m.ChannelID, "Try Again")
+						s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("❌ %v", err))
+						s.ChannelMessageSend(dmChannel.ID, "Try Again")
 
 					} else {
-						s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("✅ Task Deleted Successfully\n"))
-						s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(":debug response: %s \n", response))
+						s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("✅ Task Deleted Successfully\n"))
+						s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf(":debug response: %s \n", response))
 					}
 				} else {
-					s.ChannelMessageSend(m.ChannelID, "🗑️ Task deletion cancelled.")
+					s.ChannelMessageSend(dmChannel.ID, "🗑️ Task deletion cancelled.")
 				}
 
 				// End conversation
@@ -299,29 +307,29 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Fetch tasks from API with default limit of 5
 		taskResponse, err := TodoApp.GetTasks(m.Author.ID, page, 5)
 		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Error fetching tasks: %v", err))
+			s.ChannelMessageSend(dmChannel.ID, fmt.Sprintf("❌ Error fetching tasks: %v", err))
 			return
 		}
 
 		// Format the response message
 		if len(taskResponse.Tasks) == 0 {
-			s.ChannelMessageSend(m.ChannelID, "📭 You have no tasks yet. Use `!todo-create` to add some!")
+			s.ChannelMessageSend(dmChannel.ID, "📭 You have no tasks yet. Use `!todo-create` to add some!")
 			return
 		}
 
 		// Initialize or reset the task ID map for this page
 		userPagination[m.Author.ID].TaskIDMap = make(map[int]string)
-		
+
 		// Build the task list message
 		message := fmt.Sprintf("**📋 Your Todo List (Page %d/%d)**\n\n", taskResponse.Page, taskResponse.TotalPages)
 
 		for i, task := range taskResponse.Tasks {
 			// Calculate the friendly number for this task
 			friendlyNumber := (i + 1) + ((page - 1) * 5)
-			
+
 			// Store the mapping between friendly number and actual task ID
 			userPagination[m.Author.ID].TaskIDMap[friendlyNumber] = task.ID
-			
+
 			// Add emoji based on status
 			statusEmoji := "📝"
 			switch task.Status {
@@ -341,7 +349,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		message += fmt.Sprintf("\n📄 Page %d of %d | Total tasks: %d\n", taskResponse.Page, taskResponse.TotalPages, taskResponse.Total)
-		
+
 		// Add navigation buttons
 		components := []discordgo.MessageComponent{}
 
@@ -373,12 +381,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 		// Send message with navigation buttons
 		if len(actions) > 0 {
-			s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			s.ChannelMessageSendComplex(dmChannel.ID, &discordgo.MessageSend{
 				Content:    message,
 				Components: actions,
 			})
 		} else {
-			s.ChannelMessageSend(m.ChannelID, message)
+			s.ChannelMessageSend(dmChannel.ID, message)
 		}
 	}
 
@@ -466,75 +474,99 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if strings.HasPrefix(m.Content, "!todo-create") {
+		// Check if this is already a DM channel
+		channel, err := s.State.Channel(m.ChannelID)
+		if err == nil && channel.Type != discordgo.ChannelTypeDM {
+			// Only notify in server channels, not DMs
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("<@%s> Please check your DMs to create a new task!", m.Author.ID))
+		}
 		// Start the conversation
 		userStates[m.Author.ID] = &ConversationState{Step: 1, Action: "create"}
-		s.ChannelMessageSend(m.ChannelID, "📝 Let's create a new task! What's the title?")
+		s.ChannelMessageSend(dmChannel.ID, "📝 Let's create a new task! What's the title?")
 		return
 	}
 
 	if strings.HasPrefix(m.Content, "!todo-update") {
+		// Check if this is already a DM channel
+		channel, err := s.State.Channel(m.ChannelID)
+		if err == nil && channel.Type != discordgo.ChannelTypeDM {
+			// Only notify in server channels, not DMs
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("<@%s> Please check your DMs to update a task!", m.Author.ID))
+		}
 		// Check if the command is exactly "!todo-update" with no arguments
 		if strings.TrimSpace(m.Content) == "!todo-update" {
 			// No number provided, show the task list automatically
-			s.ChannelMessageSend(m.ChannelID, "No task number provided. Here's your task list:")
+			s.ChannelMessageSend(dmChannel.ID, "No task number provided. Here's your task list:")
 			showTaskList()
 			return
 		}
-		
+
 		// Extract task number from command
 		taskNumberStr := strings.TrimPrefix(m.Content, "!todo-update ")
 		if taskNumberStr == "" {
 			// No number provided, show the task list automatically
-			s.ChannelMessageSend(m.ChannelID, "No task number provided. Here's your task list:")
+			s.ChannelMessageSend(dmChannel.ID, "No task number provided. Here's your task list:")
 			showTaskList()
 			return
 		}
-		
+
 		// Convert to integer
 		taskNumber, err := strconv.Atoi(taskNumberStr)
 		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, "❌ Please provide a valid task number. Usage: `!todo-update <number>`")
+			s.ChannelMessageSend(dmChannel.ID, "❌ Please provide a valid task number. Usage: `!todo-update <number>`")
 			return
 		}
-		
+
 		// Start the update conversation
 		userStates[m.Author.ID] = &ConversationState{Step: 1, TaskNumber: taskNumber, Action: "update", Attempts: 0}
-		s.ChannelMessageSend(m.ChannelID, "📝 Let's update your task! What's the new title? (Type 'skip' to keep the current title)")
+		s.ChannelMessageSend(dmChannel.ID, "📝 Let's update your task! What's the new title? (Type 'skip' to keep the current title)")
 		return
 	}
 
 	if strings.HasPrefix(m.Content, "!todo-delete") {
+		// Check if this is already a DM channel
+		channel, err := s.State.Channel(m.ChannelID)
+		if err == nil && channel.Type != discordgo.ChannelTypeDM {
+			// Only notify in server channels, not DMs
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("<@%s> Please check your DMs to delete a task!", m.Author.ID))
+		}
 		// Check if the command is exactly "!todo-delete" with no arguments
 		if strings.TrimSpace(m.Content) == "!todo-delete" {
 			// No number provided, show the task list automatically
-			s.ChannelMessageSend(m.ChannelID, "No task number provided. Here's your task list:")
+			s.ChannelMessageSend(dmChannel.ID, "No task number provided. Here's your task list:")
 			showTaskList()
 			return
 		}
-		
+
 		// Extract task number from command
 		taskNumberStr := strings.TrimPrefix(m.Content, "!todo-delete ")
 		if taskNumberStr == "" {
 			// No number provided, show the task list automatically
-			s.ChannelMessageSend(m.ChannelID, "No task number provided. Here's your task list:")
+			s.ChannelMessageSend(dmChannel.ID, "No task number provided. Here's your task list:")
 			showTaskList()
 			return
 		}
-		
+
 		// Convert to integer
 		taskNumber, err := strconv.Atoi(taskNumberStr)
 		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, "❌ Please provide a valid task number. Usage: `!todo-delete <number>`")
+			s.ChannelMessageSend(dmChannel.ID, "❌ Please provide a valid task number. Usage: `!todo-delete <number>`")
 			return
 		}
-		
+
 		// Start the delete conversation
 		userStates[m.Author.ID] = &ConversationState{Step: 1, TaskNumber: taskNumber, Action: "delete", Attempts: 0}
-		s.ChannelMessageSend(m.ChannelID, "🗑️ Are you sure you want to delete this task? Type 'yes' to confirm or 'no' to cancel.")
+		s.ChannelMessageSend(dmChannel.ID, "🗑️ Are you sure you want to delete this task? Type 'yes' to confirm or 'no' to cancel.")
 		return
 	}
 
 	if strings.HasPrefix(m.Content, "!todo-list") {
+		// Check if this is already a DM channel
+		channel, err := s.State.Channel(m.ChannelID)
+		if err == nil && channel.Type != discordgo.ChannelTypeDM {
+			// Only notify in server channels, not DMs
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("<@%s> Please check your DMs for your task list!", m.Author.ID))
+		}
 		showTaskList()
 	}
 
@@ -561,7 +593,16 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 
 			// Update user's pagination state
-			userID := i.Member.User.ID
+			// For DM interactions, i.Member might be nil, so we use i.User.ID instead
+			userID := ""
+			if i.Member != nil {
+				userID = i.Member.User.ID
+			} else if i.User != nil {
+				userID = i.User.ID
+			} else {
+				// If we can't identify the user, return
+				return
+			}
 			if _, exists := userPagination[userID]; !exists {
 				userPagination[userID] = &PaginationState{TaskIDMap: make(map[int]string)}
 			}
@@ -593,17 +634,17 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 			// Reset the task ID map for this page
 			userPagination[userID].TaskIDMap = make(map[int]string)
-			
+
 			// Build the task list message
 			message := fmt.Sprintf("**📋 Your Todo List (Page %d/%d)**\n\n", taskResponse.Page, taskResponse.TotalPages)
 
 			for i, task := range taskResponse.Tasks {
 				// Calculate the friendly number for this task
 				friendlyNumber := (i + 1) + ((page - 1) * 5)
-				
+
 				// Store the mapping between friendly number and actual task ID
 				userPagination[userID].TaskIDMap[friendlyNumber] = task.ID
-				
+
 				// Add emoji based on status
 				statusEmoji := "📝"
 				switch task.Status {

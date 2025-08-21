@@ -6,8 +6,7 @@ import (
 )
 
 type AppConfig struct {
-	Token     string
-	ChannelID string
+	Token string
 }
 
 func LoadConfig() *AppConfig {
@@ -15,12 +14,10 @@ func LoadConfig() *AppConfig {
 	if err != nil {
 		return &AppConfig{
 			"",
-			"",
 		}
 	}
 
 	return &AppConfig{
-		Token:     os.Getenv("BOT_API_TOKEN"),
-		ChannelID: os.Getenv("CHANNEL_ID"),
+		Token: os.Getenv("BOT_API_TOKEN"),
 	}
 }
